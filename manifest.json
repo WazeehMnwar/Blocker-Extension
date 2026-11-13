@@ -1,0 +1,28 @@
+{
+    "manifest_version": 3,
+    "name": "Blockout",
+    "version": "2.0.0",
+    "description": "Intentional browsing with shared limits, scheduled lockdown, and time to unwind.",
+    "permissions": [
+        "storage", "tabs", "alarms"
+    ],
+    "background": {
+        "service_worker": "background.js"
+    },
+    "host_permissions": ["http://*/*", "https://*/*"],
+    "options_ui": {"page": "dashboard.html", "open_in_tab": true},
+    "action": {
+        "default_popup": "popup.html",
+        "default_title": "Configure Blockout"
+    },
+    "content_scripts": [
+        {
+            "matches": [
+                "http://*/*", "https://*/*"
+            ],
+            "js": [
+                "challenge.js", "content.js"
+            ]
+        }
+    ]
+}

@@ -1,0 +1,8 @@
+node_modules/
+tmp/
+releases/
+*.xpi
+*.zip
+blockout-backup-*.json
+.DS_Store
+Thumbs.db
