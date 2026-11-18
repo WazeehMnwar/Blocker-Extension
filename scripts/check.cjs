@@ -8,10 +8,11 @@ const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json')));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json')));
 assert.equal(manifest.version, pkg.version);
 assert.equal(manifest.manifest_version, 3);
-assert.equal(manifest.background.service_worker, 'background.js');
+assert.equal(manifest.background.service_worker, 'background-entry.js');
+assert.equal(manifest.background.type, 'module');
 assert.ok(!('scripts' in manifest.background), 'Edge MV3 source must not declare background.scripts');
 assert.ok(!('browser_specific_settings' in manifest), 'Firefox settings belong only in the Firefox package');
-const entryFiles = [manifest.background.service_worker, 'core.js', manifest.action.default_popup, manifest.options_ui.page, ...manifest.content_scripts.flatMap(c => c.js)];
+const entryFiles = [manifest.background.service_worker, 'background.js', 'core.js', manifest.action.default_popup, manifest.options_ui.page, ...manifest.content_scripts.flatMap(c => c.js)];
 for (const name of entryFiles) assert.ok(fs.existsSync(path.join(root, name)), 'Missing manifest entry: ' + name);
 for (const name of fs.readdirSync(root).filter(n => n.endsWith('.html'))) {
   const html = fs.readFileSync(path.join(root, name), 'utf8');

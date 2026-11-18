@@ -8,15 +8,51 @@ const lines = value => value.split('\n').map(s => s.trim()).filter(Boolean);
 function node(tag, className, text) { const e = document.createElement(tag); if (className) e.className = className; if (text !== undefined) e.textContent = text; return e; }
 function toast(text, error = false) { const e = $('toast'); e.textContent = text; e.hidden = false; e.classList.toggle('error-toast', error); clearTimeout(toastTimer); toastTimer = setTimeout(() => e.hidden = true, 4500); }
 async function call(message) { const result = await bridge.send(message); if (result.config) snapshot = result; return result; }
+function setupSettingsFolds() {
+  const descriptions = {
+    'youtube-heading': 'Channels, viewing time, and allowed videos',
+    'budgets-heading': 'Weekend, emergency, and music time',
+    'help-settings-heading': 'When repeated attempts open Need Help',
+    'support-heading': 'Reminders, tasks, and saved links',
+    'access-heading': 'Phrase to edit settings',
+    'data-heading': 'Export and import'
+  };
+  document.querySelectorAll('.settings-content > .panel:not(.site-rules-panel)').forEach((panel, index) => {
+    const heading = panel.querySelector(':scope > h2');
+    const fold = node('details', 'settings-fold');
+    const summary = node('summary', 'settings-fold-summary');
+    const label = node('div', 'settings-fold-label');
+    const content = node('div', 'settings-fold-content');
+    fold.dataset.section = heading.id;
+    label.append(heading, node('span', 'settings-fold-note', descriptions[heading.id]));
+    summary.append(node('span', 'settings-fold-index', String(index + 1).padStart(2, '0')), label, node('span', 'settings-fold-chevron'));
+    while (panel.firstChild) content.append(panel.firstChild);
+    fold.append(summary, content);
+    panel.replaceWith(fold);
+  });
+  $('settings-form').addEventListener('invalid', event => {
+    const section = event.target.closest('.settings-fold, .rule-row');
+    if (section) section.open = true;
+  }, true);
+  document.querySelectorAll('.settings-nav a').forEach(link => link.addEventListener('click', () => {
+    const section = document.getElementById(link.hash.slice(1))?.closest('.settings-fold');
+    if (section) section.open = true;
+  }));
+}
 function route() {
-  const hash = location.hash.slice(1), headings = ['rules', 'schedule', 'youtube', 'budgets', 'support', 'data'];
+  const hash = location.hash.slice(1), headings = ['rules', 'youtube', 'budgets', 'help-settings', 'support', 'access', 'data'];
   page = ['home', 'thaw', 'help', 'stats', 'settings'].includes(hash) ? hash : headings.some(h => hash === h + '-heading') ? 'settings' : 'home';
   document.querySelectorAll('.page').forEach(e => e.hidden = e.id !== 'page-' + page);
   document.querySelectorAll('[data-nav]').forEach(e => { const active = e.dataset.nav === page; e.classList.toggle('active', active); if (active) e.setAttribute('aria-current', 'page'); else e.removeAttribute('aria-current'); });
   $('breadcrumb').textContent = 'Your space / ' + ({ home: 'Overview', thaw: 'Time to unwind', help: 'Need Help', stats: 'Your week', settings: 'Settings' })[page];
   if (snapshot) { render(); if (page === 'settings' && !settingsLoaded) fillSettings(); }
   if (page === 'stats') bridge.send({ action: 'reportSeen' }).catch(() => {});
-  if (hash.endsWith('-heading')) requestAnimationFrame(() => $(hash)?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  if (hash.endsWith('-heading')) {
+    const heading = $(hash);
+    const section = heading?.closest('.settings-fold');
+    if (section) section.open = true;
+    requestAnimationFrame(() => heading?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  }
   else window.scrollTo(0, 0);
 }
 window.addEventListener('hashchange', route);
@@ -41,7 +77,7 @@ function render() {
     allowances('home-allowances');
   }
   if (page === 'thaw') allowances('thaw-allowances');
-  if (page === 'help') renderSupport();
+  if (page === 'help') { renderSupport(); renderNap(); }
   if (page === 'stats') renderStats();
   if (page === 'settings') {
     $('unlock-form').hidden = !s.locked; $('settings-form').hidden = s.locked; $('lock-settings').hidden = !s.config.passwordEnabled || s.locked;
@@ -54,16 +90,26 @@ function allowances(id) {
     const top = node('div', 'split'); top.append(node('h3', '', names[kind]), node('span', 'allowance-icon', icons[kind]));
     const time = node('div', 'allowance-time'); time.dataset.time = '';
     const caption = node('small'); caption.dataset.caption = '';
-    const description = node('p', '', kind === 'weekend' ? 'A little entertainment, each weekend day.' : kind === 'emergency' ? 'Extra breathing room for the harder days.' : 'A soundtrack, without opening everything.');
+    const progress = node('div', 'allowance-progress'); progress.setAttribute('role', 'progressbar');
+    const progressFill = node('span'); progress.append(progressFill);
+    const used = node('div', 'allowance-used'); used.dataset.used = '';
+    const description = node('p', '', kind === 'weekend' ? 'Ordinary blocked sites, on Saturday and Sunday.' : kind === 'emergency' ? 'Every site in your blocked-site list, including grace-period sites. YouTube rules stay separate.' : 'YouTube Music and sites marked Music.');
     const button = node('button', 'button secondary'); button.type = 'button';
     button.onclick = async () => { try { await call({ action: 'thaw', kind: snapshot.activeThaw === kind ? null : kind }); render(); toast(snapshot.activeThaw ? `${names[kind]} allowance ready. Open an eligible site to use it.` : 'Allowance stopped. Unused time is preserved.'); } catch (e) { toast(e.message, true); } };
     const status = node('div', 'allowance-state'); status.dataset.status = '';
-    card.append(top, time, caption, description, button, status); parent.append(card);
+    card.append(top, time, caption, progress, used, description, button, status); parent.append(card);
   }
   for (const card of parent.children) {
     const kind = card.dataset.kind, b = s.balances[kind], active = s.activeThaw === kind;
     card.classList.toggle('active', active);
     card.querySelector('[data-time]').textContent = bridge.time(b.remaining);
+    const spent = Math.max(0, b.total - b.remaining);
+    card.querySelector('[data-used]').textContent = bridge.time(spent) + ' used this period';
+    const progress = card.querySelector('.allowance-progress');
+    progress.firstChild.style.width = (b.total ? Math.min(100, spent / b.total * 100) : 0) + '%';
+    progress.setAttribute('aria-valuenow', String(Math.round(spent / 60000)));
+    progress.setAttribute('aria-valuemax', String(b.total / 60000));
+    progress.setAttribute('aria-label', names[kind] + ' minutes used');
     card.querySelector('[data-caption]').textContent = `of ${b.total / 60000} minutes · ${kind === 'weekend' ? 'per weekend day' : 'per ' + s.config.allowances[kind].period}`;
     const button = card.querySelector('button'); button.textContent = active ? 'Stop & keep unused time' : 'Start ' + names[kind].toLowerCase() + ' thaw →';
     button.disabled = !b.available || b.remaining <= 0;
@@ -71,47 +117,76 @@ function allowances(id) {
     card.querySelector('[data-status]').textContent = active ? ((kind === 'music' ? s.clock.music : s.clock.general) ? '● Counting · eligible tabs are open' : 'Ⅱ Ready · no eligible tabs open') : !b.available ? 'Available Saturday & Sunday' : b.remaining <= 0 ? 'Used up for this period' : 'Not started · your time is preserved';
   }
 }
-const flows = {
-  focus: { icon: '◎', label: 'I can’t focus', question: 'What would help you get started?', choices: [['small', 'Make the task smaller'], ['clarity', 'See what I planned to do']] },
-  uneasy: { icon: '≈', label: 'I feel uneasy', question: 'What kind of support sounds useful?', choices: [['breathe', 'A quiet minute'], ['talk', 'Talk it through']] },
-  tired: { icon: '☾', label: 'I’m tired', question: 'What does your energy need?', choices: [['break', 'A short break away from the screen'], ['nap', 'A brief desk nap']] },
-  bored: { icon: '◌', label: 'I’m bored', question: 'What would feel better than a feed?', choices: [['alternative', 'Something I saved for this moment'], ['move', 'A change of scene']] },
-  scroll: { icon: '↻', label: 'I want to scroll', question: 'What would you like to try first?', choices: [['promise', 'Remember why I set these rules'], ['alternative', 'Choose a saved alternative']] }
+const feelings = {
+  uneasy: 'Feel uneasy',
+  focus: "Can't focus",
+  tired: 'Feeling tired',
+  bored: 'Bored',
+  horny: 'Horny'
 };
-const recommendations = {
-  small: ['Make it almost too easy.', 'Pick one task below. Work on just the first sentence, page, or small step for five minutes. You can decide what comes next after that.'],
-  clarity: ['One thing. Then the next.', 'Look at your tasks below and choose the smallest useful step. You don’t have to finish everything right now.'],
-  breathe: ['Take a minute without a feed.', 'Put your feet on the floor, relax your shoulders, and breathe at a comfortable pace. Give yourself a moment before choosing what to do next.'],
-  talk: ['Put the feeling into words.', 'Write down what’s on your mind, or talk it through with ChatGPT. Opening a conversation does not disable your boundaries.'],
-  break: ['Step away for a little while.', 'Get some water, stretch, or look outside for five minutes. Leave the screen behind; your rules will still be here when you return.'],
-  nap: ['Rest is a useful next step.', 'If it suits your day, set an alarm for a short rest in a comfortable, safe place. Come back to one small task afterward.'],
-  alternative: ['Choose something you already chose.', 'Open a saved resource below. There’s no recommendation feed here. Your normal website and YouTube rules still apply.'],
-  move: ['Change the scene.', 'Stand up, walk for a few minutes, or step outside if you can. Give yourself a different input before you decide what comes next.'],
-  promise: ['Come back to your own words.', 'Read one of your promises below. Take a breath, then choose the next thing you want to give your attention to.']
-};
+let napUntil = Number(sessionStorage.getItem('blockoutNapUntil')) || 0;
 function resetHelp() {
-  $('help-step').textContent = 'A SMALL CHECK-IN'; $('help-question').textContent = 'How are you feeling right now?'; $('help-result').hidden = true; $('help-options').hidden = false; $('help-options').replaceChildren();
-  for (const [key, flow] of Object.entries(flows)) {
-    const button = node('button', 'choice'); button.type = 'button'; button.append(node('span', '', flow.icon), document.createTextNode(flow.label));
-    button.onclick = () => {
-      $('help-step').textContent = flow.label.toUpperCase(); $('help-question').textContent = flow.question; $('help-options').replaceChildren();
-      for (const [result, label] of flow.choices) {
-        const choice = node('button', 'choice', label); choice.type = 'button'; choice.onclick = () => showRecommendation(result); $('help-options').append(choice);
-      }
-    };
+  $('help-step').textContent = 'CHECK IN'; $('help-question').textContent = 'How are you feeling?';
+  $('help-result').hidden = true; $('help-options').hidden = false; $('help-options').replaceChildren();
+  for (const [key, label] of Object.entries(feelings)) {
+    const button = node('button', 'choice feeling-choice', label); button.type = 'button';
+    button.onclick = () => showHelpActions(key);
     $('help-options').append(button);
   }
 }
-function showRecommendation(key) {
-  const [title, detail] = recommendations[key]; $('help-question').textContent = title; $('help-options').hidden = true;
-  const result = $('help-result'); result.hidden = false; result.replaceChildren(node('p', 'help-result-text', detail));
-  if (key === 'talk') { const a = node('a', 'button primary', 'Open ChatGPT ↗'); a.href = 'https://chatgpt.com/'; a.target = '_blank'; a.rel = 'noopener noreferrer'; result.append(a); }
-  if (key === 'promise') result.append(node('p', 'promise-item', snapshot.config.promises[0] || 'Give your attention to something you chose.'));
-  result.append(node('small', '', 'This walkthrough does not turn off lockdown.'));
+function helpLink(label, url) {
+  const link = node('a', 'button secondary', label);
+  link.href = url; link.target = '_blank'; link.rel = 'noopener noreferrer';
+  return link;
+}
+function showHelpActions(key) {
+  $('help-step').textContent = feelings[key].toUpperCase();
+  $('help-question').textContent = 'Choose a next step';
+  $('help-options').hidden = true;
+  const result = $('help-result'); result.hidden = false; result.replaceChildren();
+  const groups = node('div', 'help-action-grid');
+  const group = title => {
+    const section = node('section', 'help-action-group');
+    section.append(node('h3', '', title));
+    groups.append(section); return section;
+  };
+  const quick = group('Quick boost');
+  const quickLinks = node('div', 'help-action-links');
+  quickLinks.append(helpLink('Instagram', 'https://www.instagram.com/'), helpLink('LinkedIn', 'https://www.linkedin.com/'));
+  quick.append(quickLinks);
+  group('Talk it through').append(helpLink('Open ChatGPT', 'https://chatgpt.com/'));
+  const saved = group('Listen to a saved video');
+  const videos = [...(snapshot?.config.youtube.allowedVideos || []), ...(snapshot?.config.resources || []).filter(item => B.videoId(item.url))];
+  const seen = new Set();
+  const videoLinks = node('div', 'help-action-links');
+  for (const video of videos) {
+    const id = B.videoId(video.url); if (seen.has(id)) continue; seen.add(id);
+    videoLinks.append(helpLink(video.label, video.url));
+  }
+  if (!seen.size) videoLinks.append(node('a', 'button secondary', 'Add a video in Settings'));
+  if (!seen.size) videoLinks.firstChild.href = '#youtube-heading';
+  saved.append(videoLinks);
+  const rest = group('Power nap');
+  const napControls = node('div', 'help-action-links');
+  const start = node('button', 'button secondary', 'Start 20-minute timer'); start.type = 'button'; start.id = 'nap-start';
+  start.onclick = () => { napUntil = Date.now() + 20 * 60000; sessionStorage.setItem('blockoutNapUntil', String(napUntil)); renderNap(); };
+  const reset = node('button', 'button secondary', 'Reset timer'); reset.type = 'button'; reset.id = 'nap-reset';
+  reset.onclick = () => { napUntil = 0; sessionStorage.removeItem('blockoutNapUntil'); renderNap(); };
+  napControls.append(start, reset); rest.append(napControls, node('p', 'nap-status'));
+  result.append(groups, node('small', '', 'Site links still follow your blocking rules.'));
+  renderNap();
+}
+function renderNap() {
+  const status = document.querySelector('#help-result .nap-status');
+  if (!status) return;
+  const remaining = napUntil - Date.now();
+  status.textContent = !napUntil ? 'Timer not started' : remaining > 0 ? bridge.time(remaining) + ' left' : '20 minutes finished';
+  document.querySelector('#nap-reset').hidden = !napUntil;
+  document.querySelector('#nap-start').textContent = napUntil ? 'Restart 20-minute timer' : 'Start 20-minute timer';
 }
 $('help-reset').onclick = resetHelp;
 function renderSupport() {
-  const config = snapshot.config, fingerprint = JSON.stringify([config.promises, config.todos, config.resources]);
+  const config = snapshot.config, fingerprint = JSON.stringify([config.promises, config.todos, config.resources, config.youtube.allowedVideos]);
   if (fingerprint === supportFingerprint) return; supportFingerprint = fingerprint;
   $('help-promises').replaceChildren(...config.promises.map(p => node('div', 'promise-item', p)));
   if (!config.promises.length) $('help-promises').append(node('p', 'empty', 'Add a note to your future self in Settings.'));
@@ -119,8 +194,12 @@ function renderSupport() {
   config.todos.forEach((task, index) => { const row = node('div', 'todo-item'); const button = node('button', '', '✓'); button.setAttribute('aria-label', 'Complete ' + task); button.onclick = async () => { try { await call({ action: 'todo', index }); renderSupport(); } catch (e) { toast(e.message, true); } }; row.append(button, node('span', '', task)); $('help-todos').append(row); });
   if (!config.todos.length) $('help-todos').append(node('p', 'empty', 'A clear list starts with one small step. Add yours in Settings.'));
   $('help-resources').replaceChildren();
+  for (const video of config.youtube.allowedVideos || []) {
+    const a = node('a', 'resource-link', video.label + ' ↗'); a.href = video.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
+    a.append(node('small', '', 'Allowed YouTube video')); $('help-resources').append(a);
+  }
   config.resources.forEach(r => { const a = node('a', 'resource-link', r.label + ' ↗'); a.href = r.url; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.append(node('small', '', new URL(r.url).hostname)); $('help-resources').append(a); });
-  if (!config.resources.length) $('help-resources').append(node('p', 'empty', 'Save a useful video, a favorite article, or a helpful website in Settings.'));
+  if (!(config.youtube.allowedVideos || []).length && !config.resources.length) $('help-resources').append(node('p', 'empty', 'Save a useful video, a favorite article, or a helpful website in Settings.'));
 }
 function renderStats() {
   const weeks = [...new Set([snapshot.stats.week, ...Object.keys(snapshot.daily).map(d => B.weekKey(+new Date(d + 'T12:00:00')))])].sort().reverse();
@@ -141,7 +220,7 @@ function renderStats() {
   const values = days.map(d => snapshot.daily[d.key]?.attempts || 0), max = Math.max(1, ...values);
   $('daily-chart').replaceChildren(...days.map((d, i) => { const col = node('div', 'chart-column'); const bar = node('div', 'chart-bar'); bar.style.height = Math.max(2, values[i] / max * 140) + 'px'; col.append(node('span', 'chart-number', String(values[i])), bar, node('span', 'chart-label', d.label)); return col; }));
   $('daily-chart').setAttribute('aria-label', days.map((d, i) => `${d.label}: ${values[i]} blocked attempts`).join(', '));
-  breakdown('stats-sites', current.sites, 'No blocked attempts this week.'); breakdown('stats-keywords', current.categories, 'No keyword matches this week.');
+  breakdown('stats-sites', current.sites, 'No blocked attempts this week.'); breakdown('stats-channels', current.channels, 'No channel blocks this week.');
   $('stats-thaw').replaceChildren(...Object.entries(current.thaw).map(([kind, value]) => { const row = node('div', 'breakdown-row'); row.append(node('span', '', names[kind]), node('span', 'mono', bridge.time(value) + ' used')); return row; }));
   $('stats-outcomes').textContent = `${current.bypassStarts} challenges started · ${current.bypasses} completed · ${current.failedBypasses} unsuccessful submissions. Remaining allowance balances are shown in Time to unwind.`;
 }
@@ -151,51 +230,127 @@ function breakdown(id, data, empty) {
   if (!entries.length) $(id).append(node('p', 'empty', empty));
 }
 $('stats-week').onchange = () => { statsFingerprint = ''; renderStats(); };
-function addSite(site = {}) {
-  const row = node('div', 'rule-row');
+function addSite(site = {}, expand = false) {
+  const row = node('details', 'rule-row');
+  row.open = expand;
+  const summary = node('summary', 'rule-summary');
+  const summaryName = node('strong', 'rule-summary-name');
+  const summaryMode = node('span', 'rule-summary-mode');
+  const summaryKind = node('span', 'rule-summary-kind');
+  summary.append(summaryName, summaryMode, summaryKind, node('span', 'rule-summary-chevron'));
+  const body = node('div', 'rule-body');
   const top = node('div', 'rule-top');
   const input = node('input'); input.type = 'text'; input.value = site.domain || ''; input.placeholder = 'example.com'; input.required = true; input.dataset.domain = ''; input.setAttribute('aria-label', 'Blocked domain');
   const kind = node('select'); kind.dataset.kind = ''; kind.setAttribute('aria-label', 'Site category'); for (const [value, label] of [['general', 'General'], ['music', 'Music']]) { const option = node('option', '', label); option.value = value; kind.append(option); } kind.value = site.kind || 'general';
   const remove = node('button', 'remove-rule', '×'); remove.type = 'button'; remove.setAttribute('aria-label', 'Remove site rule'); remove.onclick = () => { row.remove(); settingsDirty = true; $('save-status').textContent = 'You have unsaved changes.'; };
   const message = node('input', 'rule-message'); message.placeholder = 'Optional message on this site’s block screen'; message.value = site.message || ''; message.dataset.message = ''; message.setAttribute('aria-label', 'Block screen message');
-  const label = node('label', 'toggle-row'); const check = node('input'); check.type = 'checkbox'; check.checked = site.bypassEnabled !== false; check.dataset.bypass = ''; label.append(check, document.createTextNode('Allow a typed-phrase exception'));
-  top.append(input, kind, remove); row.append(top, message, label); $('site-rules').append(row);
+  const field = (text, control) => { const label = node('label', 'rule-field'); label.append(node('span', '', text), control); return label; };
+  const numeric = (key, value, min, max) => { const control = node('input'); control.type = 'number'; control.min = min; control.max = max; control.required = true; control.value = value; control.dataset[key] = ''; return control; };
+  const access = node('label', 'toggle-row'); const check = node('input'); check.type = 'checkbox'; check.checked = site.bypassEnabled === true; check.dataset.bypass = ''; access.append(check, document.createTextNode('Allow temporary access with a phrase'));
+  const phrase = node('textarea'); phrase.rows = 2; phrase.dataset.phrase = ''; phrase.value = site.bypassText || ''; phrase.placeholder = 'Type the phrase for this website'; phrase.required = check.checked;
+  const minutes = numeric('minutes', site.bypassMinutes ?? 10, 0.1, 180); minutes.step = 'any';
+  const accessFields = node('div', 'rule-fields'); accessFields.append(field('Phrase to type', phrase), field('Access lasts (minutes)', minutes));
+  check.onchange = () => { phrase.required = check.checked; accessFields.hidden = !check.checked; };
+  accessFields.hidden = !check.checked;
+  const close = numeric('close', site.closeSeconds ?? 5, 0, 3600);
+  const schedule = site.schedule || { enabled: false, days: [0, 1, 2, 3, 4, 5, 6], start: '09:00', end: '18:00' };
+  const mode = node('select'); mode.dataset.mode = '';
+  for (const [value, label] of [['always', 'Block all the time'], ['scheduled', 'Block at set times'], ['limited', 'Grace period at set times']]) { const option = node('option', '', label); option.value = value; mode.append(option); }
+  mode.value = site.mode || (schedule.enabled ? 'scheduled' : 'always');
+  const dailyMinutes = numeric('dailyMinutes', site.dailyMinutes ?? 5, 0.1, 1440); dailyMinutes.step = 'any';
+  const limitField = field('Grace period (focused minutes)', dailyMinutes);
+  const days = node('div', 'day-picker'); days.dataset.days = '';
+  ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach((name, index) => { const day = node('label'); const box = node('input'); box.type = 'checkbox'; box.value = index; box.checked = schedule.days.includes(index); day.append(box, document.createTextNode(name)); days.append(day); });
+  const start = node('input'); start.type = 'time'; start.required = true; start.dataset.start = ''; start.value = schedule.start;
+  const end = node('input'); end.type = 'time'; end.required = true; end.dataset.end = ''; end.value = schedule.end;
+  const times = node('div', 'rule-schedule'); const timeFields = node('div', 'rule-fields');
+  const startField = field('Access starts', start), endField = field('Access ends', end);
+  const timeHeading = node('strong', 'rule-time-heading');
+  timeFields.append(startField, endField); times.append(timeHeading, days, timeFields, node('small', '', 'Same start and end means all day. Overnight hours count toward the day they start.'));
+  const syncMode = () => {
+    times.hidden = mode.value === 'always'; limitField.hidden = mode.value !== 'limited'; dailyMinutes.required = mode.value === 'limited';
+    timeHeading.textContent = mode.value === 'limited' ? 'Hours when grace time is available' : 'Hours when this website is blocked';
+    startField.firstChild.textContent = mode.value === 'limited' ? 'Access starts' : 'Block starts';
+    endField.firstChild.textContent = mode.value === 'limited' ? 'Access ends' : 'Block ends';
+    row.dataset.ruleMode = mode.value;
+  };
+  const updateSummary = () => {
+    summaryName.textContent = input.value.trim() || 'New website';
+    summaryMode.textContent = mode.selectedOptions[0].textContent;
+    summaryKind.textContent = kind.selectedOptions[0].textContent;
+  };
+  mode.onchange = () => { syncMode(); updateSummary(); };
+  input.addEventListener('input', updateSummary);
+  kind.addEventListener('change', updateSummary);
+  syncMode(); updateSummary();
+  const blocking = node('div', 'rule-group');
+  blocking.append(node('h3', '', 'When to block'), field('Blocking mode', mode), limitField, times);
+  const screen = node('div', 'rule-group');
+  screen.append(node('h3', '', 'Block screen'), field('Message (optional)', message), field('Close tab after (seconds; 0 keeps it open)', close));
+  const exception = node('div', 'rule-group');
+  exception.append(node('h3', '', 'Temporary access'), access, accessFields);
+  top.append(field('Website', input), field('Category', kind), remove);
+  body.append(top, blocking, screen, exception);
+  row.append(summary, body);
+  row.addEventListener('toggle', () => {
+    if (row.open) $('site-rules').querySelectorAll('.rule-row').forEach(other => { if (other !== row) other.open = false; });
+  });
+  $('site-rules').append(row);
 }
 function fillSettings() {
   if (!snapshot || settingsDirty) return;
   const c = snapshot.config; settingsLoaded = true;
-  $('site-rules').replaceChildren(); c.sites.forEach(addSite);
-  $('approved-domains').value = c.approved.join('\n'); $('schedule-enabled').checked = c.schedule.enabled;
-  $('schedule-days').replaceChildren(...['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => { const label = node('label'); const input = node('input'); input.type = 'checkbox'; input.value = i; input.checked = c.schedule.days.includes(i); label.append(input, document.createTextNode(d)); return label; }));
-  $('schedule-start').value = c.schedule.start; $('schedule-end').value = c.schedule.end;
-  $('close-seconds').value = c.closeSeconds; $('bypass-minutes').value = c.bypassMinutes; $('bypass-phrase').value = ''; $('password-phrase').value = '';
+  $('site-rules').replaceChildren(); c.sites.forEach(site => addSite({
+    ...site, bypassText: site.bypassText || c.bypassText,
+    schedule: site.schedule || c.schedule, closeSeconds: site.closeSeconds ?? c.closeSeconds,
+    bypassMinutes: site.bypassMinutes ?? c.bypassMinutes
+  }));
+  $('password-phrase').value = ''; $('youtube-bypass-phrase').value = '';
+  $('help-attempts').value = c.help.attempts; $('help-window').value = c.help.windowMinutes;
   $('password-enabled').checked = c.passwordEnabled; $('youtube-enabled').checked = c.youtube.enabled;
   $('youtube-minutes').value = c.youtube.minutes; $('youtube-freeze').value = c.youtube.freezeMinutes;
-  $('youtube-keywords').value = c.youtube.keywords.map(g => g.name + ': ' + g.words.join(', ')).join('\n');
+  $('youtube-channels').value = (c.youtube.channels || []).join('\n');
+  $('youtube-allowed-videos').value = (c.youtube.allowedVideos || []).map(video => video.label + ' | ' + video.url).join('\n');
   for (const kind of Object.keys(names)) $('' + kind + '-minutes').value = c.allowances[kind].minutes;
   $('emergency-period').value = c.allowances.emergency.period; $('music-period').value = c.allowances.music.period;
   $('promises').value = c.promises.join('\n'); $('todos').value = c.todos.join('\n'); $('resources').value = c.resources.map(r => r.label + ' | ' + r.url).join('\n');
 }
 function readSettings() {
   const c = B.clone(snapshot.config), num = id => Number($(id).value);
-  c.sites = [...$('site-rules').children].map(row => ({ domain: row.querySelector('[data-domain]').value, kind: row.querySelector('[data-kind]').value, message: row.querySelector('[data-message]').value, bypassEnabled: row.querySelector('[data-bypass]').checked }));
-  c.approved = lines($('approved-domains').value); c.schedule = { enabled: $('schedule-enabled').checked, days: [...$('schedule-days').querySelectorAll('input:checked')].map(e => Number(e.value)), start: $('schedule-start').value, end: $('schedule-end').value };
-  c.closeSeconds = num('close-seconds'); c.bypassMinutes = num('bypass-minutes'); c.bypassText = $('bypass-phrase').value.trim(); c.passwordText = $('password-phrase').value.trim(); c.passwordEnabled = $('password-enabled').checked;
-  c.youtube = { enabled: $('youtube-enabled').checked, minutes: num('youtube-minutes'), freezeMinutes: num('youtube-freeze'), keywords: parseKeywords($('youtube-keywords').value) };
+  c.sites = [...$('site-rules').children].map(row => ({
+    domain: row.querySelector('[data-domain]').value, kind: row.querySelector('[data-kind]').value,
+    message: row.querySelector('[data-message]').value, bypassEnabled: row.querySelector('[data-bypass]').checked,
+    bypassText: row.querySelector('[data-phrase]').value.trim(),
+    bypassMinutes: Number(row.querySelector('[data-minutes]').value),
+    closeSeconds: Number(row.querySelector('[data-close]').value),
+    mode: row.querySelector('[data-mode]').value,
+    dailyMinutes: Number(row.querySelector('[data-daily-minutes]').value),
+    schedule: { enabled: row.querySelector('[data-mode]').value !== 'always',
+      days: [...row.querySelector('[data-days]').querySelectorAll('input:checked')].map(e => Number(e.value)),
+      start: row.querySelector('[data-start]').value, end: row.querySelector('[data-end]').value }
+  }));
+  c.approved = []; c.bypassText = $('youtube-bypass-phrase').value.trim(); c.passwordText = $('password-phrase').value.trim(); c.passwordEnabled = $('password-enabled').checked;
+  c.help = { attempts: num('help-attempts'), windowMinutes: num('help-window') };
+  c.youtube = { enabled: $('youtube-enabled').checked, minutes: num('youtube-minutes'), freezeMinutes: num('youtube-freeze'),
+    channels: lines($('youtube-channels').value).map(value => {
+      const key = B.channelKey(value); if (!key) throw Error('Use a YouTube channel URL or @handle on each line.'); return key;
+    }),
+    allowedVideos: lines($('youtube-allowed-videos').value).map(line => {
+      const sep = line.indexOf('|'), label = line.slice(0, sep).trim(), url = line.slice(sep + 1).trim();
+      if (sep < 1 || !label || !B.videoId(url)) throw Error('Allowed videos use: Title | YouTube video URL.');
+      return { label, url };
+    }) };
   for (const kind of Object.keys(names)) c.allowances[kind].minutes = num(kind + '-minutes');
   c.allowances.emergency.period = $('emergency-period').value; c.allowances.music.period = $('music-period').value;
   c.promises = lines($('promises').value); c.todos = lines($('todos').value);
   c.resources = lines($('resources').value).map(line => { const sep = line.indexOf('|'); if (sep < 1 || !B.parseUrl(line.slice(sep + 1).trim())) throw Error('Saved resources use: Title | https://address'); return { label: line.slice(0, sep).trim(), url: line.slice(sep + 1).trim() }; });
   return c;
 }
-function parseKeywords(text) {
-  return lines(text).map(line => { const i = line.indexOf(':'); if (i < 1) throw Error('Keyword groups use: Category: phrase, phrase'); const words = line.slice(i + 1).split(',').map(w => w.trim()).filter(Boolean); if (!words.length) throw Error('Each keyword group needs at least one phrase.'); return { name: line.slice(0, i).trim(), words }; });
-}
-$('add-site').onclick = () => { addSite(); settingsDirty = true; $('site-rules').lastElementChild.querySelector('input').focus(); };
+$('add-site').onclick = () => { addSite({}, true); settingsDirty = true; $('save-status').textContent = 'You have unsaved changes.'; $('site-rules').lastElementChild.querySelector('[data-domain]').focus(); };
 $('settings-form').addEventListener('input', () => { settingsDirty = true; $('save-status').textContent = 'You have unsaved changes.'; });
 $('settings-form').onsubmit = async e => {
   e.preventDefault(); const button = e.submitter; button.disabled = true;
-  try { await call({ action: 'settings', config: readSettings() }); settingsDirty = false; settingsLoaded = false; fillSettings(); render(); $('save-status').textContent = 'Saved. Your boundaries are in place.'; toast('Your boundaries have been saved.'); }
+  try { await call({ action: 'settings', config: readSettings() }); settingsDirty = false; settingsLoaded = false; fillSettings(); render(); $('save-status').textContent = 'Settings saved.'; toast('Settings saved.'); }
   catch (error) { toast(error.message, true); $('save-status').textContent = error.message; } finally { button.disabled = false; }
 };
 $('unlock-phrase').addEventListener('paste', e => e.preventDefault()); $('unlock-phrase').addEventListener('drop', e => e.preventDefault());
@@ -206,12 +361,10 @@ $('export-data').onclick = async () => {
 };
 $('import-data').onclick = () => $('backup-file').click();
 $('backup-file').onchange = async e => { try { const file = e.target.files[0]; if (!file) return; if (file.size > 2000000) throw Error('Choose a backup under 2 MB.'); await call({ action: 'import', data: JSON.parse(await file.text()) }); settingsDirty = false; fillSettings(); render(); toast('Settings imported. Spent time was preserved.'); } catch (error) { toast(error.message, true); } finally { e.target.value = ''; } };
-$('import-keywords').onclick = () => $('keyword-file').click();
-$('keyword-file').onchange = async e => { try { const file = e.target.files[0]; if (!file) return; if (file.size > 200000) throw Error('Choose a keyword file under 200 KB.'); const groups = JSON.parse(await file.text()); if (!Array.isArray(groups) || groups.some(g => !g.name || !Array.isArray(g.words) || g.words.some(w => typeof w !== 'string'))) throw Error('Use a JSON array of {name, words} groups.'); $('youtube-keywords').value = groups.map(g => g.name + ': ' + g.words.join(', ')).join('\n'); settingsDirty = true; $('save-status').textContent = 'Keywords imported. Save to apply them.'; } catch (error) { toast(error.message, true); } finally { e.target.value = ''; } };
 async function refresh() {
   if (busy) return; busy = true;
   try { await call({ action: 'snapshot' }); render(); if (page === 'settings' && !settingsLoaded) fillSettings(); }
   catch (error) { toast(error.message, true); } finally { busy = false; }
 }
 window.addEventListener('beforeunload', e => { if (settingsDirty) { e.preventDefault(); e.returnValue = ''; } });
-resetHelp(); route(); refresh(); setInterval(refresh, 1000);
+setupSettingsFolds(); resetHelp(); route(); refresh(); setInterval(refresh, 1000);

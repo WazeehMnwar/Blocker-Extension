@@ -2,6 +2,21 @@
   const api = typeof browser !== 'undefined' ? browser : chrome;
   let screen = null, host = null, busy = false, previousInert = false, nextTick = null;
   const send = message => api.runtime.sendMessage(message);
+  function channelRefs() {
+    if (!/(^|\.)youtube\.com$/.test(location.hostname)) return [];
+    const watchId = new URL(location.href).searchParams.get('v');
+    const watch = document.querySelector('ytd-watch-flexy[video-id]');
+    if (watchId && watch && watch.getAttribute('video-id') !== watchId) return [];
+    const owners = document.querySelectorAll('ytd-watch-metadata #owner, ytd-video-owner-renderer, ytd-reel-player-overlay-renderer #channel-name, ytd-reel-player-header-renderer');
+    const links = [...owners].flatMap(owner => [...owner.querySelectorAll('a[href]')].map(link => link.href))
+      .filter(href => {
+        const u = new URL(href);
+        return /(^|\.)youtube\.com$/.test(u.hostname) && /^\/(?:@|channel\/|c\/|user\/)/.test(u.pathname);
+      });
+    const channelId = document.querySelector('meta[itemprop="channelId"]')?.content;
+    if (channelId?.startsWith('UC')) links.push('channel/' + channelId);
+    return [...new Set(links)].slice(0, 6);
+  }
   function enforce(message) {
     if (message.block) {
       if (!screen) {
@@ -20,8 +35,8 @@
     if (busy) return; busy = true;
     clearTimeout(nextTick);
     try {
-      const title = [document.querySelector('h1.ytd-watch-metadata')?.textContent, document.title, document.querySelector('meta[name="description"]')?.content, document.querySelector('meta[name="keywords"]')?.content].filter(Boolean).join(' ').slice(0, 2000);
-      const result = await send({ action: 'tick', url: location.href, title });
+      const title = document.title.slice(0, 2000);
+      const result = await send({ action: 'tick', url: location.href, title, channels: channelRefs() });
       enforce(result);
       // Unrelated websites do not need an ongoing heartbeat.
       if (result.watch) nextTick = setTimeout(tick, 1000);

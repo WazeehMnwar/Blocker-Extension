@@ -20,6 +20,7 @@ test('dashboard loads a complete overview without runtime errors', async t => {
   const ui = open('dashboard.html'); t.after(() => ui.close()); await wait();
   assert.equal(ui.d.querySelector('#page-home').hidden, false);
   assert.equal(ui.d.querySelectorAll('#home-allowances .allowance-card').length, 3);
+  assert.match(ui.d.querySelector('#home-allowances [data-kind=music] [data-used]').textContent, /used this period/);
   assert.equal(ui.d.querySelector('#rule-count').textContent, '3 site boundaries');
   assert.equal(ui.d.querySelector('#preview-badge').hidden, false);
   assert.deepEqual(ui.errors, []);
@@ -33,30 +34,71 @@ test('all main navigation routes work and settings fill correctly', async t => {
   }
   assert.equal(ui.d.querySelector('#youtube-minutes').value, '30');
   assert.equal(ui.d.querySelectorAll('#site-rules .rule-row').length, 3);
+  assert.equal(ui.d.querySelectorAll('#site-rules details[open]').length, 0);
+  assert.equal(ui.d.querySelector('#site-rules .rule-summary-name').textContent, 'reddit.com');
+  ui.d.querySelector('#site-rules .rule-summary').click();
+  assert.equal(ui.d.querySelectorAll('#site-rules details[open]').length, 1);
+  assert.equal(ui.d.querySelector('#site-rules details[open] [data-domain]').value, 'reddit.com');
+  assert.equal(ui.d.querySelectorAll('.settings-fold').length, 6);
+  assert.equal(ui.d.querySelectorAll('.settings-fold[open]').length, 0);
+  ui.w.location.hash = 'youtube-heading'; await wait();
+  assert.equal(ui.d.querySelector('#youtube-heading').closest('details').open, true);
+  ui.d.querySelector('#youtube-heading').closest('details').querySelector('summary').click();
+  assert.equal(ui.d.querySelector('#youtube-heading').closest('details').open, false);
+  ui.d.querySelector('.settings-nav a[href="#youtube-heading"]').click();
+  assert.equal(ui.d.querySelector('#youtube-heading').closest('details').open, true);
   assert.deepEqual(ui.errors, []);
 });
 test('saving settings persists site rules, budgets, phrases, and support data', async t => {
   const ui = open('dashboard.html', '#settings'); t.after(() => ui.close()); await wait();
   ui.d.querySelector('#add-site').click();
-  ui.d.querySelector('#site-rules').lastElementChild.querySelector('[data-domain]').value = 'example.com';
+  const siteRow = ui.d.querySelector('#site-rules').lastElementChild;
+  siteRow.querySelector('[data-domain]').value = 'example.com';
+  siteRow.querySelector('[data-bypass]').checked = true;
+  siteRow.querySelector('[data-phrase]').value = 'Example phrase';
+  siteRow.querySelector('[data-minutes]').value = '4';
+  siteRow.querySelector('[data-close]').value = '9';
+  siteRow.querySelector('[data-mode]').value = 'limited';
+  siteRow.querySelector('[data-daily-minutes]').value = '5';
+  siteRow.querySelector('[data-start]').value = '08:00';
+  siteRow.querySelector('[data-end]').value = '12:00';
   ui.d.querySelector('#youtube-minutes').value = '12';
+  ui.d.querySelector('#help-attempts').value = '4';
+  ui.d.querySelector('#help-window').value = '15';
   ui.d.querySelector('#weekend-minutes').value = '45';
-  ui.d.querySelector('#bypass-phrase').value = 'My new boundary';
   ui.d.querySelector('#promises').value = 'Keep the promise';
   ui.d.querySelector('#resources').value = 'A useful article | https://example.org/article';
   ui.d.querySelector('#settings-form button[type=submit]').click(); await wait();
   const s = JSON.parse(ui.w.localStorage.getItem('blockout-preview'));
   assert.equal(s.config.sites.at(-1).domain, 'example.com');
+  assert.equal(s.config.sites.at(-1).bypassText, 'Example phrase');
+  assert.equal(s.config.sites.at(-1).bypassMinutes, 4);
+  assert.equal(s.config.sites.at(-1).closeSeconds, 9);
+  assert.equal(s.config.sites.at(-1).mode, 'limited');
+  assert.equal(s.config.sites.at(-1).dailyMinutes, 5);
+  assert.equal(s.config.sites.at(-1).schedule.start, '08:00');
   assert.equal(s.config.youtube.minutes, 12); assert.equal(s.config.allowances.weekend.minutes, 45);
-  assert.equal(s.config.bypassText, 'My new boundary'); assert.equal(s.config.promises[0], 'Keep the promise');
+  assert.equal(s.config.help.attempts, 4); assert.equal(s.config.help.windowMinutes, 15);
+  assert.equal(s.config.promises[0], 'Keep the promise');
   assert.equal(s.config.resources[0].url, 'https://example.org/article');
-  assert.equal(ui.d.querySelector('#bypass-phrase').value, ''); assert.deepEqual(ui.errors, []);
+  assert.deepEqual(ui.errors, []);
 });
-test('malformed keyword groups show a useful validation error', async t => {
+test('invalid channel links show a useful validation error', async t => {
   const ui = open('dashboard.html', '#settings'); t.after(() => ui.close()); await wait();
-  ui.d.querySelector('#youtube-keywords').value = 'missing separator';
+  ui.d.querySelector('#youtube-channels').value = 'not a channel';
   ui.d.querySelector('#settings-form button[type=submit]').click(); await wait();
-  assert.match(ui.d.querySelector('#toast').textContent, /Category: phrase/);
+  assert.match(ui.d.querySelector('#toast').textContent, /channel URL or @handle/);
+});
+test('allowed YouTube videos save once and appear in Need Help', async t => {
+  const ui = open('dashboard.html', '#settings'); t.after(() => ui.close()); await wait();
+  ui.d.querySelector('#youtube-allowed-videos').value = 'Rain sounds | https://youtu.be/abcdefghijk';
+  ui.d.querySelector('#settings-form button[type=submit]').click(); await wait();
+  const saved = JSON.parse(ui.w.localStorage.getItem('blockout-preview'));
+  assert.equal(saved.config.youtube.allowedVideos[0].label, 'Rain sounds');
+  ui.w.location.hash = 'help'; await wait();
+  assert.equal(ui.d.querySelector('#help-resources a').href, 'https://youtu.be/abcdefghijk');
+  ui.d.querySelector('#help-options button').click();
+  assert.equal(ui.d.querySelector('#help-result a[href="https://youtu.be/abcdefghijk"]').textContent, 'Rain sounds');
 });
 test('thaw buttons start and stop an allowance without navigation', async t => {
   const ui = open('dashboard.html', '#thaw'); t.after(() => ui.close()); await wait();
@@ -66,13 +108,18 @@ test('thaw buttons start and stop an allowance without navigation', async t => {
   button.click(); await wait();
   assert.match(button.textContent, /Start/); assert.deepEqual(ui.errors, []);
 });
-test('Need Help supports follow-up questions and actionable results', async t => {
+test('Need Help shows five feelings and direct actions', async t => {
   const ui = open('dashboard.html', '#help'); t.after(() => ui.close()); await wait();
   const buttons = ui.d.querySelectorAll('#help-options button'); assert.equal(buttons.length, 5);
-  buttons[1].click(); assert.match(ui.d.querySelector('#help-question').textContent, /support/);
-  ui.d.querySelectorAll('#help-options button')[1].click();
+  assert.equal(buttons[4].textContent, 'Horny');
+  buttons[4].click();
   assert.equal(ui.d.querySelector('#help-result').hidden, false);
-  assert.equal(ui.d.querySelector('#help-result a').href, 'https://chatgpt.com/');
+  for (const url of ['https://www.instagram.com/', 'https://www.linkedin.com/', 'https://chatgpt.com/'])
+    assert.ok(ui.d.querySelector('#help-result a[href="' + url + '"]'));
+  ui.d.querySelector('#nap-start').click();
+  assert.match(ui.d.querySelector('.nap-status').textContent, /20:00 left/);
+  ui.d.querySelector('#nap-reset').click();
+  assert.equal(ui.d.querySelector('.nap-status').textContent, 'Timer not started');
   ui.d.querySelector('#help-reset').click(); assert.equal(ui.d.querySelectorAll('#help-options button').length, 5);
   assert.deepEqual(ui.errors, []);
 });
@@ -88,6 +135,8 @@ test('popup connects and shows the three allowance controls', async t => {
   const ui = open('popup.html'); t.after(() => ui.close()); await wait();
   assert.equal(ui.d.querySelectorAll('.allowance-row').length, 3);
   assert.match(ui.d.querySelector('#youtube-time').textContent, /30:00/);
+  assert.match(ui.d.querySelector('#youtube-used').textContent, /0:00 used of 30:00/);
+  assert.match(ui.d.querySelectorAll('.allowance-row')[2].textContent, /0:00 used/);
   assert.equal(ui.d.querySelector('#error').textContent, ''); assert.deepEqual(ui.errors, []);
 });
 test('challenge uses safe text, shows its phrase, and submits a deliberate exception', async t => {
@@ -96,23 +145,29 @@ test('challenge uses safe text, shows its phrase, and submits a deliberate excep
   const calls = [];
   const screen = w.BlockoutChallenge(w.document.getElementById('host'), async message => { calls.push(message); return message.action === 'challengeHint' ? { phrase: 'A deliberate exception' } : { ok: true }; });
   const shadow = w.document.getElementById('host').shadowRoot;
-  screen.update({ reason: 'keyword', category: '<script>bad()</script>', domain: 'youtube.com', signature: 'x', bypass: true }, { promises: ['Keep going'] });
+  assert.ok(shadow.querySelector('.actions #help'));
+  screen.update({ reason: 'channel', channel: '<script>bad()</script>', domain: 'youtube.com', signature: 'x', bypass: true }, { promises: ['Keep going'] });
   assert.equal(shadow.querySelectorAll('script').length, 0);
   shadow.querySelector('#begin').click(); await wait(); assert.equal(shadow.querySelector('#challenge').hidden, false);
   shadow.querySelector('#show').click(); await wait(); assert.equal(shadow.querySelector('#hint').textContent, 'A deliberate exception');
   shadow.querySelector('#phrase').value = 'A deliberate exception';
+  let pageKeydowns = 0;
+  w.document.addEventListener('keydown', () => pageKeydowns++);
+  shadow.querySelector('#phrase').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'I', shiftKey: true, bubbles: true, composed: true }));
+  assert.equal(pageKeydowns, 0);
   shadow.querySelector('#challenge').dispatchEvent(new w.Event('submit', { cancelable: true })); await wait();
   assert.equal(calls.at(-1).action, 'bypass'); assert.equal(calls.at(-1).phrase, 'A deliberate exception');
   screen.destroy(); assert.equal(w.document.getElementById('host'), null);
 });
-test('content enforcement pauses media, makes the page inert, and restores it after bypass', async t => {
-  const dom = new JSDOM('<body><h1 class="ytd-watch-metadata">A restoration</h1><video></video></body>', { runScripts: 'outside-only', url: 'https://youtube.com/watch?v=x' }); t.after(() => dom.window.close());
-  const w = dom.window; let paused = 0, listener;
+test('content enforcement reads the channel, pauses media, and restores the page', async t => {
+  const dom = new JSDOM('<body><ytd-watch-metadata><div id="owner"></div></ytd-watch-metadata><ytd-video-owner-renderer><a href="/@CarProjects">Channel</a></ytd-video-owner-renderer><video></video></body>', { runScripts: 'outside-only', url: 'https://youtube.com/watch?v=x' }); t.after(() => dom.window.close());
+  const w = dom.window; let paused = 0, listener, tick;
   w.document.querySelector('video').pause = () => paused++;
-  const block = { reason: 'keyword', category: 'Car projects', domain: 'youtube.com', signature: 'x', bypass: true };
-  w.chrome = { runtime: { async sendMessage() { return { block, config: { promises: [] } }; }, onMessage: { addListener(fn) { listener = fn; } } } };
+  const block = { reason: 'channel', channel: '@carprojects', domain: 'youtube.com', signature: 'x', bypass: true };
+  w.chrome = { runtime: { async sendMessage(message) { tick = message; return { block, config: { promises: [] } }; }, onMessage: { addListener(fn) { listener = fn; } } } };
   w.eval(fs.readFileSync(path.join(root, 'challenge.js'), 'utf8')); w.eval(fs.readFileSync(path.join(root, 'content.js'), 'utf8'));
   await wait();
+  assert.deepEqual(Array.from(tick.channels), ['https://youtube.com/@CarProjects']);
   assert.ok(w.document.getElementById('blockout-boundary')); assert.equal(w.document.body.inert, true); assert.ok(paused > 0);
   listener({ action: 'enforce', block: null });
   assert.equal(w.document.getElementById('blockout-boundary'), null); assert.equal(w.document.body.inert, false);
