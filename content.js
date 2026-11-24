@@ -1,6 +1,6 @@
 (() => {
   const api = typeof browser !== 'undefined' ? browser : chrome;
-  let screen = null, host = null, busy = false, previousInert = false, nextTick = null;
+  let screen = null, host = null, busy = false, previousInert = false, nextTick = null, musicShiftTimer = null, musicShifted = false;
   const send = message => api.runtime.sendMessage(message);
   function channelRefs() {
     if (!/(^|\.)youtube\.com$/.test(location.hostname)) return [];
@@ -38,6 +38,16 @@
       const title = document.title.slice(0, 2000);
       const result = await send({ action: 'tick', url: location.href, title, channels: channelRefs() });
       enforce(result);
+      if (result.musicShift && document.visibilityState === 'visible') {
+        if (!musicShiftTimer && !musicShifted) {
+          musicShiftTimer = setTimeout(async () => {
+            musicShiftTimer = null; musicShifted = true;
+            try { await send({ action: 'musicShift', url: location.href }); } catch { /* Tab or extension closed. */ }
+          }, 5000);
+        }
+      } else {
+        clearTimeout(musicShiftTimer); musicShiftTimer = null; musicShifted = false;
+      }
       // Unrelated websites do not need an ongoing heartbeat.
       if (result.watch) nextTick = setTimeout(tick, 1000);
     } catch { /* Extension was reloaded or the page is closing. */ } finally { busy = false; }

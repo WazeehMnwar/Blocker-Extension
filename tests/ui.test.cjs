@@ -25,6 +25,21 @@ test('dashboard loads a complete overview without runtime errors', async t => {
   assert.equal(ui.d.querySelector('#preview-badge').hidden, false);
   assert.deepEqual(ui.errors, []);
 });
+test('settings cannot replace saved rules before they finish loading', async t => {
+  const ui = open('dashboard.html', '#settings'); t.after(() => ui.close());
+  assert.equal(ui.d.querySelector('#settings-form').hidden, true);
+  ui.d.querySelector('#add-site').click();
+  assert.equal(ui.d.querySelectorAll('#site-rules .rule-row').length, 0);
+  await wait();
+  assert.equal(ui.d.querySelector('#settings-form').hidden, false);
+  assert.equal(ui.d.querySelectorAll('#site-rules .rule-row').length, 3);
+  ui.d.querySelector('#add-site').click();
+  ui.d.querySelector('#site-rules').lastElementChild.querySelector('[data-domain]').value = 'example.com';
+  ui.d.querySelector('#settings-form button[type=submit]').click(); await wait();
+  const sites = JSON.parse(ui.w.localStorage.getItem('blockout-preview')).config.sites;
+  assert.deepEqual(sites.map(site => site.domain), ['reddit.com', 'instagram.com', 'open.spotify.com', 'example.com']);
+  assert.deepEqual(ui.errors, []);
+});
 test('all main navigation routes work and settings fill correctly', async t => {
   const ui = open('dashboard.html'); t.after(() => ui.close()); await wait();
   for (const page of ['thaw', 'help', 'stats', 'settings', 'home']) {
@@ -114,6 +129,8 @@ test('Need Help shows five feelings and direct actions', async t => {
   assert.equal(buttons[4].textContent, 'Horny');
   buttons[4].click();
   assert.equal(ui.d.querySelector('#help-result').hidden, false);
+  assert.equal(ui.d.querySelector('#help-solutions').hidden, false);
+  assert.equal(ui.d.querySelector('#help-todos').closest('.panel').querySelector('h2').textContent, 'Wisdom');
   for (const url of ['https://www.instagram.com/', 'https://www.linkedin.com/', 'https://chatgpt.com/'])
     assert.ok(ui.d.querySelector('#help-result a[href="' + url + '"]'));
   ui.d.querySelector('#nap-start').click();
@@ -121,6 +138,15 @@ test('Need Help shows five feelings and direct actions', async t => {
   ui.d.querySelector('#nap-reset').click();
   assert.equal(ui.d.querySelector('.nap-status').textContent, 'Timer not started');
   ui.d.querySelector('#help-reset').click(); assert.equal(ui.d.querySelectorAll('#help-options button').length, 5);
+  assert.equal(ui.d.querySelector('#help-solutions').hidden, true);
+  assert.deepEqual(ui.errors, []);
+});
+test('automatic Need Help uses a focused full-screen layout', async t => {
+  const ui = open('dashboard.html', '?forced=1#help'); t.after(() => ui.close()); await wait();
+  assert.equal(ui.d.body.classList.contains('forced-help'), true);
+  assert.equal(ui.d.querySelector('#help-dashboard').hidden, false);
+  ui.w.location.hash = 'home'; await wait();
+  assert.equal(ui.d.body.classList.contains('forced-help'), false);
   assert.deepEqual(ui.errors, []);
 });
 test('stats render empty-state cards and an accessible seven-day chart', async t => {

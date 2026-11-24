@@ -42,10 +42,13 @@ function setupSettingsFolds() {
 function route() {
   const hash = location.hash.slice(1), headings = ['rules', 'youtube', 'budgets', 'help-settings', 'support', 'access', 'data'];
   page = ['home', 'thaw', 'help', 'stats', 'settings'].includes(hash) ? hash : headings.some(h => hash === h + '-heading') ? 'settings' : 'home';
+  const forced = new URLSearchParams(location.search).get('forced') === '1' && page === 'help';
+  document.body.classList.toggle('forced-help', forced);
+  $('help-dashboard').hidden = !forced;
   document.querySelectorAll('.page').forEach(e => e.hidden = e.id !== 'page-' + page);
   document.querySelectorAll('[data-nav]').forEach(e => { const active = e.dataset.nav === page; e.classList.toggle('active', active); if (active) e.setAttribute('aria-current', 'page'); else e.removeAttribute('aria-current'); });
   $('breadcrumb').textContent = 'Your space / ' + ({ home: 'Overview', thaw: 'Time to unwind', help: 'Need Help', stats: 'Your week', settings: 'Settings' })[page];
-  if (snapshot) { render(); if (page === 'settings' && !settingsLoaded) fillSettings(); }
+  if (snapshot) { if (page === 'settings' && !settingsLoaded) fillSettings(); render(); }
   if (page === 'stats') bridge.send({ action: 'reportSeen' }).catch(() => {});
   if (hash.endsWith('-heading')) {
     const heading = $(hash);
@@ -80,7 +83,8 @@ function render() {
   if (page === 'help') { renderSupport(); renderNap(); }
   if (page === 'stats') renderStats();
   if (page === 'settings') {
-    $('unlock-form').hidden = !s.locked; $('settings-form').hidden = s.locked; $('lock-settings').hidden = !s.config.passwordEnabled || s.locked;
+    $('unlock-form').hidden = !s.locked; $('settings-form').hidden = s.locked || !settingsLoaded;
+    $('settings-loading').hidden = s.locked || settingsLoaded; $('lock-settings').hidden = !s.config.passwordEnabled || s.locked;
   }
 }
 function allowances(id) {
@@ -128,6 +132,8 @@ let napUntil = Number(sessionStorage.getItem('blockoutNapUntil')) || 0;
 function resetHelp() {
   $('help-step').textContent = 'CHECK IN'; $('help-question').textContent = 'How are you feeling?';
   $('help-result').hidden = true; $('help-options').hidden = false; $('help-options').replaceChildren();
+  $('help-solutions').hidden = true;
+  document.body.classList.remove('help-selected');
   for (const [key, label] of Object.entries(feelings)) {
     const button = node('button', 'choice feeling-choice', label); button.type = 'button';
     button.onclick = () => showHelpActions(key);
@@ -141,8 +147,10 @@ function helpLink(label, url) {
 }
 function showHelpActions(key) {
   $('help-step').textContent = feelings[key].toUpperCase();
-  $('help-question').textContent = 'Choose a next step';
+  $('help-question').textContent = 'Solutions';
   $('help-options').hidden = true;
+  $('help-solutions').hidden = false;
+  document.body.classList.add('help-selected');
   const result = $('help-result'); result.hidden = false; result.replaceChildren();
   const groups = node('div', 'help-action-grid');
   const group = title => {
@@ -191,8 +199,8 @@ function renderSupport() {
   $('help-promises').replaceChildren(...config.promises.map(p => node('div', 'promise-item', p)));
   if (!config.promises.length) $('help-promises').append(node('p', 'empty', 'Add a note to your future self in Settings.'));
   $('help-todos').replaceChildren();
-  config.todos.forEach((task, index) => { const row = node('div', 'todo-item'); const button = node('button', '', '✓'); button.setAttribute('aria-label', 'Complete ' + task); button.onclick = async () => { try { await call({ action: 'todo', index }); renderSupport(); } catch (e) { toast(e.message, true); } }; row.append(button, node('span', '', task)); $('help-todos').append(row); });
-  if (!config.todos.length) $('help-todos').append(node('p', 'empty', 'A clear list starts with one small step. Add yours in Settings.'));
+  config.todos.forEach(thought => $('help-todos').append(node('div', 'wisdom-item', thought)));
+  if (!config.todos.length) $('help-todos').append(node('p', 'empty', 'Add your own wisdom in Settings.'));
   $('help-resources').replaceChildren();
   for (const video of config.youtube.allowedVideos || []) {
     const a = node('a', 'resource-link', video.label + ' ↗'); a.href = video.url; a.target = '_blank'; a.rel = 'noopener noreferrer';
@@ -299,7 +307,7 @@ function addSite(site = {}, expand = false) {
 }
 function fillSettings() {
   if (!snapshot || settingsDirty) return;
-  const c = snapshot.config; settingsLoaded = true;
+  const c = snapshot.config;
   $('site-rules').replaceChildren(); c.sites.forEach(site => addSite({
     ...site, bypassText: site.bypassText || c.bypassText,
     schedule: site.schedule || c.schedule, closeSeconds: site.closeSeconds ?? c.closeSeconds,
@@ -314,8 +322,10 @@ function fillSettings() {
   for (const kind of Object.keys(names)) $('' + kind + '-minutes').value = c.allowances[kind].minutes;
   $('emergency-period').value = c.allowances.emergency.period; $('music-period').value = c.allowances.music.period;
   $('promises').value = c.promises.join('\n'); $('todos').value = c.todos.join('\n'); $('resources').value = c.resources.map(r => r.label + ' | ' + r.url).join('\n');
+  settingsLoaded = true;
 }
 function readSettings() {
+  if (!snapshot?.config || !settingsLoaded) throw Error('Saved rules have not loaded. Nothing was changed.');
   const c = B.clone(snapshot.config), num = id => Number($(id).value);
   c.sites = [...$('site-rules').children].map(row => ({
     domain: row.querySelector('[data-domain]').value, kind: row.querySelector('[data-kind]').value,
@@ -346,12 +356,14 @@ function readSettings() {
   c.resources = lines($('resources').value).map(line => { const sep = line.indexOf('|'); if (sep < 1 || !B.parseUrl(line.slice(sep + 1).trim())) throw Error('Saved resources use: Title | https://address'); return { label: line.slice(0, sep).trim(), url: line.slice(sep + 1).trim() }; });
   return c;
 }
-$('add-site').onclick = () => { addSite({}, true); settingsDirty = true; $('save-status').textContent = 'You have unsaved changes.'; $('site-rules').lastElementChild.querySelector('[data-domain]').focus(); };
-$('settings-form').addEventListener('input', () => { settingsDirty = true; $('save-status').textContent = 'You have unsaved changes.'; });
+$('add-site').onclick = () => { if (!settingsLoaded) return; addSite({}, true); settingsDirty = true; $('save-status').textContent = 'You have unsaved changes.'; $('site-rules').lastElementChild.querySelector('[data-domain]').focus(); };
+$('settings-form').addEventListener('input', () => { if (!settingsLoaded) return; settingsDirty = true; $('save-status').textContent = 'You have unsaved changes.'; });
 $('settings-form').onsubmit = async e => {
-  e.preventDefault(); const button = e.submitter; button.disabled = true;
+  e.preventDefault();
+  if (!settingsLoaded || !snapshot?.config) { toast('Saved rules are still loading. Nothing was changed.', true); return; }
+  const button = e.submitter; if (button) button.disabled = true;
   try { await call({ action: 'settings', config: readSettings() }); settingsDirty = false; settingsLoaded = false; fillSettings(); render(); $('save-status').textContent = 'Settings saved.'; toast('Settings saved.'); }
-  catch (error) { toast(error.message, true); $('save-status').textContent = error.message; } finally { button.disabled = false; }
+  catch (error) { toast(error.message, true); $('save-status').textContent = error.message; } finally { if (button) button.disabled = false; }
 };
 $('unlock-phrase').addEventListener('paste', e => e.preventDefault()); $('unlock-phrase').addEventListener('drop', e => e.preventDefault());
 $('unlock-form').onsubmit = async e => { e.preventDefault(); try { const r = await call({ action: 'unlock', phrase: $('unlock-phrase').value }); if (!r.ok) $('unlock-error').textContent = 'The phrase doesn’t match yet.'; else { $('unlock-phrase').value = ''; await refresh(); fillSettings(); } } catch (error) { toast(error.message, true); } };
@@ -363,8 +375,11 @@ $('import-data').onclick = () => $('backup-file').click();
 $('backup-file').onchange = async e => { try { const file = e.target.files[0]; if (!file) return; if (file.size > 2000000) throw Error('Choose a backup under 2 MB.'); await call({ action: 'import', data: JSON.parse(await file.text()) }); settingsDirty = false; fillSettings(); render(); toast('Settings imported. Spent time was preserved.'); } catch (error) { toast(error.message, true); } finally { e.target.value = ''; } };
 async function refresh() {
   if (busy) return; busy = true;
-  try { await call({ action: 'snapshot' }); render(); if (page === 'settings' && !settingsLoaded) fillSettings(); }
-  catch (error) { toast(error.message, true); } finally { busy = false; }
+  try { await call({ action: 'snapshot' }); if (page === 'settings' && !settingsLoaded) fillSettings(); render(); }
+  catch (error) {
+    if (page === 'settings' && !settingsLoaded) $('settings-loading').textContent = 'Could not load saved rules. Nothing was changed. Retrying…';
+    else toast(error.message, true);
+  } finally { busy = false; }
 }
 window.addEventListener('beforeunload', e => { if (settingsDirty) { e.preventDefault(); e.returnValue = ''; } });
 setupSettingsFolds(); resetHelp(); route(); refresh(); setInterval(refresh, 1000);

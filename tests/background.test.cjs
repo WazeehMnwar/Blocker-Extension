@@ -44,6 +44,23 @@ test('migration backs up v1 and moves YouTube into dedicated shared settings', a
   assert.equal(s.config.sites.length, 1); assert.equal(s.locked, true);
   assert.equal(w.local.data.legacyBackup.sites.length, 2);
 });
+test('Music tab shift prefers right, then left, then a new tab', async () => {
+  const url = 'https://music.youtube.com/watch?v=abc';
+  for (const [tabs, expectedId] of [
+    [[{ id: 1, index: 0, url: 'https://example.com', active: false, windowId: 1 }, { id: 2, index: 1, url, active: true, windowId: 1 }, { id: 3, index: 2, url: 'https://example.org', active: false, windowId: 1 }], 3],
+    [[{ id: 1, index: 0, url: 'https://example.com', active: false, windowId: 1 }, { id: 2, index: 1, url, active: true, windowId: 1 }], 1],
+    [[{ id: 2, index: 0, url, active: true, windowId: 1 }], null]
+  ]) {
+    const w = await worker({ local: seeded(), tabs });
+    await w.request({ action: 'thaw', kind: 'music' });
+    assert.equal((await w.request({ action: 'musicShift', url }, 2)).ok, true);
+    if (expectedId) assert.equal(w.tabs().find(tab => tab.id === expectedId).active, true);
+    else assert.equal(w.created[0].windowId, 1);
+  }
+  const off = await worker({ local: seeded(), tabs: [{ id: 2, index: 0, url, active: true, windowId: 1 }] });
+  assert.equal((await off.request({ action: 'musicShift', url }, 2)).ok, false);
+  assert.equal(off.created.length, 0);
+});
 test('blocked ordinary tabs redirect to extension-owned screen, log once, and close after delay', async () => {
   const w = await worker({ local: seeded({ sites: [{ domain: 'reddit.com', bypassEnabled: true }] }), tabs: [{ id: 1, url: 'https://reddit.com/r/test', active: true, windowId: 1 }] });
   let s = await w.request({ action: 'snapshot' });
@@ -64,7 +81,7 @@ test('three blocked navigations in ten minutes open Need Help once', async () =>
     await w.request({ action: 'snapshot' });
   }
   assert.equal(w.local.data.blockoutV2.recentAttempts.length, 3);
-  assert.equal(w.tabs()[0].url, 'chrome-extension://blockout/dashboard.html#help');
+  assert.equal(w.tabs()[0].url, 'chrome-extension://blockout/dashboard.html?forced=1#help');
 });
 test('configured Need Help threshold opens after two attempts', async () => {
   const w = await worker({ local: seeded({ help: { attempts: 2, windowMinutes: 2 },
@@ -81,7 +98,7 @@ test('configured Need Help threshold opens after two attempts', async () => {
   await w.api.tabs.update(1, { url: 'https://reddit.com' });
   await w.api.tabs.onUpdated.emit(1, { url: 'https://reddit.com' });
   await w.request({ action: 'snapshot' });
-  assert.equal(w.tabs()[0].url, 'chrome-extension://blockout/dashboard.html#help');
+  assert.equal(w.tabs()[0].url, 'chrome-extension://blockout/dashboard.html?forced=1#help');
 });
 test('blocked attempts older than ten minutes do not trigger Need Help', async () => {
   const w = await worker({ local: seeded({ sites: [{ domain: 'reddit.com', closeSeconds: 0 }] }),

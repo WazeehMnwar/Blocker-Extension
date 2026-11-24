@@ -186,3 +186,17 @@ body.dashboard{background:linear-gradient(135deg,#10201b 0%,#1b2926 34%,#29211f 
 .dashboard .settings-fold-content{background:#1c2925}
 .dashboard .settings-nav a:hover{background:#dff17919}
 .dashboard .site-rules-panel{background:transparent;border:0}
+
+.help-heading-actions{display:flex;flex-wrap:wrap;gap:10px}
+.wisdom-item{padding:14px 0;border-bottom:1px solid #40554b;color:#dcebd5;font-size:15px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}
+.wisdom-item:last-child{border-bottom:0}
+.forced-help .sidebar,.forced-help .topbar,.forced-help .workspace-footer{display:none}
+.forced-help .workspace{margin-left:0;min-height:100vh}
+.forced-help .workspace main{max-width:1480px;min-height:100vh;padding:clamp(20px,4vh,50px) clamp(18px,5vw,72px)}
+.forced-help #page-help .page-heading{margin-bottom:20px}
+.forced-help #page-help .help-walkthrough{width:100%}
+.forced-help:not(.help-selected) #page-help .help-walkthrough{min-height:clamp(470px,65vh,760px);display:flex;flex-direction:column;justify-content:center}
+.forced-help #page-help .feeling-choice{min-height:130px;font-size:18px}
+.forced-help.help-selected #page-help .help-action-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:700px){.forced-help:not(.help-selected) #page-help .help-walkthrough{min-height:0}.forced-help #page-help .feeling-choice{min-height:96px;font-size:16px}.forced-help.help-selected #page-help .help-action-grid{grid-template-columns:1fr}}
+@media(max-width:360px){.forced-help #page-help .feeling-choice{min-height:72px}}

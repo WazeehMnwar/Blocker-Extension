@@ -6,6 +6,7 @@ const metadata = new Map();
 const navigationAttempts = new Map();
 const blockedUrl = ext.runtime.getURL('blocked.html');
 const helpUrl = ext.runtime.getURL('dashboard.html') + '#help';
+const forcedHelpUrl = ext.runtime.getURL('dashboard.html') + '?forced=1#help';
 function serial(fn) { const result = chain.then(fn); chain = result.catch(console.error); return result; }
 async function load() {
   if (state) return;
@@ -85,7 +86,7 @@ async function reconcile(now = Date.now()) {
         if (result.reason === 'channel') B.log(state, 'channel', now, result.channel);
         if (state.recentAttempts.length >= state.config.help.attempts && (!state.lastHelpAt || now < state.lastHelpAt || now - state.lastHelpAt >= state.config.help.windowMinutes * B.MINUTE)) {
           try {
-            await ext.tabs.update(tab.id, { url: helpUrl });
+            await ext.tabs.update(tab.id, { url: forcedHelpUrl });
             state.lastHelpAt = now;
             delete state.blocks[tab.id];
             continue;
@@ -190,9 +191,21 @@ async function handle(message, sender) {
     case 'tick': {
       const host = B.parseUrl(sender.tab?.url)?.hostname || '';
       const watch = B.matches(host, 'youtube.com') || state.config.sites.some(s => B.matches(host, s.domain));
-      return { block: publicBlock(state.blocks[tabId]), config: publicConfig(), usageMs: state.usageMs, watch };
+      const musicShift = host === 'music.youtube.com' && sender.tab?.active && state.activeThaw === 'music' && B.balance(state, 'music', Date.now()).remaining > 0 && !state.blocks[tabId];
+      return { block: publicBlock(state.blocks[tabId]), config: publicConfig(), usageMs: state.usageMs, watch, musicShift };
     }
     case 'blockState': return { block: publicBlock(state.blocks[tabId]), config: publicConfig() };
+    case 'musicShift': {
+      const tab = sender.tab;
+      if (!tab || message.url !== tab.url || !tab.active || B.parseUrl(tab.url)?.hostname !== 'music.youtube.com' ||
+          state.activeThaw !== 'music' || B.balance(state, 'music', Date.now()).remaining <= 0 || state.blocks[tab.id]) return { ok: false };
+      const tabs = (await ext.tabs.query({ windowId: tab.windowId })).filter(item => item.windowId === tab.windowId).sort((a, b) => a.index - b.index);
+      const position = tabs.findIndex(item => item.id === tab.id);
+      const neighbor = tabs[position + 1] || tabs[position - 1];
+      if (neighbor) await ext.tabs.update(neighbor.id, { active: true });
+      else await ext.tabs.create({ windowId: tab.windowId, active: true });
+      return { ok: true };
+    }
     case 'challengeStart': {
       const block = state.blocks[tabId]; if (block && !block.challengeStarted) { block.challengeStarted = true; block.closeAt = 0; B.log(state, 'bypassStarts', Date.now()); }
       return { ok: !!block?.bypass };
