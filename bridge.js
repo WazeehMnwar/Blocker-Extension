@@ -6,7 +6,18 @@ globalThis.BlockoutBridge = (() => {
   const time = ms => { const sec = Math.ceil(Math.max(0, ms) / 1000); return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`; };
   async function send(message) {
     let result;
-    if (live) result = await api.runtime.sendMessage(message);
+    if (live) {
+      const reply = api.runtime.sendMessage(message);
+      if (message.action !== 'snapshot') result = await reply;
+      else {
+        let timer;
+        try {
+          result = await Promise.race([reply, new Promise((_, reject) => {
+            timer = setTimeout(() => reject(Error('Blockout did not respond. Retrying shortly.')), 5000);
+          })]);
+        } finally { clearTimeout(timer); }
+      }
+    }
     else {
       demo ||= JSON.parse(localStorage.getItem('blockout-preview') || 'null') || Blockout.createState();
       if (!demo.config.sites.length && !localStorage.getItem('blockout-preview')) demo.config.sites = [{ domain: 'reddit.com', kind: 'general', bypassEnabled: true }, { domain: 'instagram.com', kind: 'general', bypassEnabled: true }, { domain: 'open.spotify.com', kind: 'music', bypassEnabled: true }];

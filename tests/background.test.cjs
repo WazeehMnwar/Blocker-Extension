@@ -21,22 +21,44 @@ async function worker(options = {}) {
   const api = {
     storage: { local, session, sync },
     runtime: { getURL: name => 'chrome-extension://blockout/' + name, onMessage: event(), onInstalled: event(), onStartup: event() },
-    tabs: { async query() { return clone(tabs); }, async update(id, patch) { if (options.failTabUpdate) throw Error('navigation failed'); Object.assign(tabs.find(t => t.id === id), patch); }, async remove(id) { tabs = tabs.filter(t => t.id !== id); }, async sendMessage(id, message) { sent.push({ id, message: clone(message) }); }, async create(tab) { created.push(tab); }, onUpdated: event(), onRemoved: event(), onActivated: event() },
+    tabs: { async query() { await options.beforeQuery?.(); return clone(tabs); }, async update(id, patch) { if (options.failTabUpdate) throw Error('navigation failed'); Object.assign(tabs.find(t => t.id === id), patch); }, async remove(id) { tabs = tabs.filter(t => t.id !== id); }, async sendMessage(id, message) { sent.push({ id, message: clone(message) }); await options.afterSend?.(); }, async create(tab) { created.push(tab); }, onUpdated: event(), onRemoved: event(), onActivated: event() },
     windows: { async getLastFocused() { return { id: 1, focused: options.windowFocused ?? true }; }, onFocusChanged: event() },
     alarms: { async create() {}, onAlarm: event() }
   };
   class Clock extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } }
-  const context = vm.createContext({ chrome: api, console, URL, Date: Clock });
+  const context = vm.createContext({ chrome: api, console, URL, Date: Clock, setTimeout, clearTimeout });
   vm.runInContext(fs.readFileSync(require.resolve('../core.js'), 'utf8'), context);
   vm.runInContext(fs.readFileSync(require.resolve('../background.js'), 'utf8'), context);
-  async function request(message, tabId) {
+  async function rawRequest(message, tabId) {
     const tab = tabs.find(t => t.id === tabId);
     const sender = tab ? { tab: clone(tab), url: tab.url } : { url: 'chrome-extension://blockout/dashboard.html' };
     return new Promise(resolve => api.runtime.onMessage.listeners[0](message, sender, resolve));
   }
-  return { api, local, session, sync, sent, created, request, advance(ms) { now += ms; }, tabs: () => tabs, async alarm() { await api.alarms.onAlarm.emit({ name: 'blockout-check' }); await vm.runInContext('chain', context); } };
+  async function alarm() { await api.alarms.onAlarm.emit({ name: 'blockout-check' }); await vm.runInContext('chain', context); }
+  // Older scenarios read a snapshot after triggering a worker enforcement pass.
+  async function request(message, tabId) {
+    if (message.action === 'snapshot') await alarm();
+    return rawRequest(message, tabId);
+  }
+  return { api, local, session, sync, sent, created, request, rawRequest, advance(ms) { now += ms; }, tabs: () => tabs, alarm };
 }
 function seeded(config = {}) { const s = B.createState(config); s.clock.at = base; return store({ blockoutV2: s }); }
+test('settings loads while a tab scan is pending, even on worker startup', { timeout: 1500 }, async () => {
+  let release, entered;
+  const scanning = new Promise(resolve => { entered = resolve; });
+  const pending = new Promise(resolve => { release = resolve; });
+  const w = await worker({ local: seeded({ sites: [{ domain: 'reddit.com' }] }), beforeQuery: () => { entered(); return pending; } });
+  try {
+    await scanning;
+    assert.equal((await w.rawRequest({ action: 'snapshot' })).config.sites[0].domain, 'reddit.com');
+  } finally { release(); await w.alarm(); }
+});
+test('a tab that never answers does not prevent another tab from blocking', { timeout: 1500 }, async () => {
+  const w = await worker({ local: seeded({ sites: [{ domain: 'reddit.com' }] }), afterSend: () => new Promise(() => {}),
+    tabs: [{ id: 1, url: 'https://example.com', windowId: 1 }, { id: 2, url: 'https://reddit.com', windowId: 1 }] });
+  await w.alarm();
+  assert.match(w.tabs()[1].url, /blocked.html\?url=/);
+});
 test('migration backs up v1 and moves YouTube into dedicated shared settings', async () => {
   const w = await worker({ sync: store({ sites: [{ domain: 'youtube.com', activeTime: 12, freezeTime: 3 }, { domain: 'reddit.com', bypassEnabled: true }], globalSettings: { passwordEnabled: true, passwordText: 'old phrase' } }) });
   const s = await w.request({ action: 'snapshot' });

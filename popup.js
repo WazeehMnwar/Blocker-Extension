@@ -5,6 +5,7 @@ async function refresh() {
   if (busy) return; busy = true;
   try {
     const s = await BlockoutBridge.send({ action: 'snapshot' });
+    $('error').textContent = '';
     $('status-title').textContent = s.activeThaw ? 'Allowance active' : 'Website rules';
     $('status-detail').textContent = s.activeThaw === 'music' ? 'YouTube Music and music sites are available. Time runs while a tab is open.' : s.activeThaw === 'emergency' ? 'Blocked websites are available. YouTube rules still apply.' : s.activeThaw ? 'Time runs while an eligible site is open.' : `${s.config.sites.length} website rules configured.`;
     const remaining = s.timerUntil > Date.now() ? s.timerUntil - Date.now() : Math.max(0, s.config.youtube.minutes * 60000 - s.usageMs);

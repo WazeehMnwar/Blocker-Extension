@@ -1,18 +1,29 @@
 /* This process is the only writer of clocks, budgets, and logs. */
 const B = globalThis.Blockout;
 const ext = typeof browser !== 'undefined' ? browser : chrome;
-let state, chain = Promise.resolve(), focusWindow = -1;
+let state, loading, updatePending = false, chain = Promise.resolve(), focusWindow = -1;
 const metadata = new Map();
 const navigationAttempts = new Map();
 const blockedUrl = ext.runtime.getURL('blocked.html');
 const helpUrl = ext.runtime.getURL('dashboard.html') + '#help';
 const forcedHelpUrl = ext.runtime.getURL('dashboard.html') + '?forced=1#help';
 function serial(fn) { const result = chain.then(fn); chain = result.catch(console.error); return result; }
-async function load() {
-  if (state) return;
+async function boundedRead(promise, label) {
+  let timer;
+  try {
+    return await Promise.race([promise, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(Error(label + ' timed out.')), 4000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+function load() {
+  if (state) return Promise.resolve();
+  return loading ||= readState().then(loaded => { state = loaded; }).finally(() => { loading = null; });
+}
+async function readState() {
   const saved = await ext.storage.local.get('blockoutV2');
-  if (saved.blockoutV2) state = saved.blockoutV2;
-  else {
+  let state = saved.blockoutV2;
+  if (!state) {
     const old = await ext.storage.sync.get({ sites: [], globalSettings: {} });
     const cfg = B.defaults();
     const oldYoutube = old.sites.find(s => ['youtube.com', 'www.youtube.com'].includes(B.domain(s.domain)));
@@ -45,8 +56,7 @@ async function load() {
     state.blocks = {}; state.videoGrants = {}; state.timerGrants = {};
     await ext.storage.session.set({ blockoutBoot: true });
   }
-  const win = await ext.windows.getLastFocused().catch(() => null);
-  focusWindow = win?.id ?? -1;
+  return state;
 }
 function blockTarget(tab) {
   if (!tab.url?.startsWith(blockedUrl)) return null;
@@ -56,8 +66,8 @@ function publicConfig() { return { promises: state.config.promises, closeSeconds
 function publicBlock(block) { if (!block) return null; const { phrase, ...safe } = block; return safe; }
 async function reconcile(now = Date.now()) {
   await load(); B.advance(state, now);
-  const tabs = await ext.tabs.query({});
-  const focused = await ext.windows.getLastFocused().catch(() => null);
+  const tabs = await boundedRead(ext.tabs.query({}), 'Tab scan');
+  const focused = await boundedRead(ext.windows.getLastFocused(), 'Window lookup').catch(() => null);
   if (focused?.id != null) focusWindow = focused.id;
   const live = new Set(tabs.map(t => String(t.id)));
   const clock = { at: now, youtube: false, general: false, music: false, screens: false, site: null };
@@ -100,7 +110,7 @@ async function reconcile(now = Date.now()) {
         try { await ext.tabs.update(tab.id, { url: blockedUrl + '?url=' + encodeURIComponent(url) }); }
         catch (error) {
           console.error('Blockout could not open the block page:', error);
-          await ext.tabs.sendMessage(tab.id, { action: 'enforce', block: publicBlock(block), config: publicConfig() }).catch(() => {});
+          void ext.tabs.sendMessage(tab.id, { action: 'enforce', block: publicBlock(block), config: publicConfig() }).catch(() => {});
         }
       }
     } else {
@@ -111,7 +121,7 @@ async function reconcile(now = Date.now()) {
       if (result.limitedSite && activeTab) clock.site = result.limitedSite;
       if (target) await ext.tabs.update(tab.id, { url }).catch(() => {});
       else {
-        await ext.tabs.sendMessage(tab.id, { action: 'enforce', block: null }).catch(() => {});
+        void ext.tabs.sendMessage(tab.id, { action: 'enforce', block: null }).catch(() => {});
       }
     }
   }
@@ -176,6 +186,7 @@ function validateConfig(raw) {
   if (!String(cfg.bypassText).trim() || !String(cfg.passwordText).trim()) throw Error('Challenge phrases cannot be empty.');
   return cfg;
 }
+const isExtensionUI = sender => sender.url?.startsWith(ext.runtime.getURL('')) && !sender.url?.startsWith(blockedUrl);
 async function handle(message, sender) {
   await load();
   if (message.action === 'tick' && sender.tab && message.url === sender.tab.url) {
@@ -185,7 +196,7 @@ async function handle(message, sender) {
     metadata.set(sender.tab.id, info);
     if (old?.title !== info.title || old?.url !== info.url || old?.channels?.join('|') !== info.channels.join('|') || Date.now() - state.clock.at >= 250) await reconcile();
   } else await reconcile();
-  const isUI = sender.url?.startsWith(ext.runtime.getURL('')) && !sender.url?.startsWith(blockedUrl);
+  const isUI = isExtensionUI(sender);
   const tabId = sender.tab?.id ?? (isUI ? message.tabId : undefined);
   switch (message.action) {
     case 'tick': {
@@ -220,7 +231,6 @@ async function handle(message, sender) {
     default: if (!isUI) throw Error('This action is available only from Blockout.');
   }
   switch (message.action) {
-    case 'snapshot': return snapshot();
     case 'unlock': { const ok = message.phrase === state.config.passwordText; if (ok) await ext.storage.session.set({ blockoutUnlocked: true }); return { ok }; }
     case 'lock': await ext.storage.session.remove('blockoutUnlocked'); return { ok: true };
     case 'settings': {
@@ -258,10 +268,22 @@ async function handle(message, sender) {
   }
 }
 ext.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message.action === 'snapshot') {
+    if (!isExtensionUI(sender)) { respond({ error: 'This action is available only from Blockout.' }); return false; }
+    load().then(snapshot).then(respond, error => respond({ error: error.message }));
+    return true;
+  }
   serial(async () => { try { const result = await handle(message, sender); if (!['tick', 'snapshot', 'blockState', 'challengeHint'].includes(message.action)) await ext.storage.local.set({ blockoutV2: state }); respond(result); } catch (error) { respond({ error: error.message }); } });
   return true;
 });
-const update = () => serial(() => reconcile()).catch(console.error);
+function update() {
+  if (updatePending) return;
+  updatePending = true;
+  return serial(() => {
+    updatePending = false;
+    return reconcile();
+  }).catch(console.error);
+}
 ext.tabs.onUpdated.addListener((id, change) => { if (change.url && B.parseUrl(change.url)) navigationAttempts.set(id, change.url); if (change.url || change.title || change.status === 'complete') update(); });
 ext.tabs.onRemoved.addListener(id => { metadata.delete(id); navigationAttempts.delete(id); update(); });
 ext.tabs.onActivated.addListener(update);
